@@ -1,0 +1,1870 @@
+---
+title: "Differential Gene Expression Analysis"
+author: "Charli E. Stoneman"
+date: "01/06/2020"
+output:
+  word_document: default
+  html_document: default
+---
+
+## Differential Gene Expression Analysis using DeSeq2
+Lots of information about this software and different vignettes can be found online. For example – a recent vignette from the developers of the software;
+<http://bioconductor.org/packages/devel/bioc/vignettes/DESeq2/inst/doc/DESeq2.html#independent-filtering-of-results>
+
+Set current working directory where everything will be saved and stored
+
+```{r echo = T, results = 'hide'}
+setwd("~/Desktop")
+
+```
+
+Load in packages which will be needed 
+```{r echo = T, results = 'hide'}
+library(magrittr)
+```
+
+# 1. Load in the count data
+```{r echo = T, results = 'hide'}
+read.counts <- read.table("~/Desktop/feature_count_results_geneid.txt", sep="\t", header = TRUE)
+```
+The results can now handled as a dataframe in the R environment 
+``` {r echo = T, results = 'hide'}
+head(read.counts, n=3)
+```
+
+
+Replace all row names with the names of genes
+```{r echo = T, results = 'hide'}
+row.names(read.counts) <- read.counts$Geneid
+```
+
+Remove the irrelevant columns which contain no count data
+```{r echo = T, results = 'hide'}
+read.counts <- read.counts[,-c(1:6)]
+```
+
+Give meaningful sample names to the columns if your data-frame does not already have clear names - this can be achieved via numerous approaches
+```{r echo = T, results = 'hide'}
+names(read.counts) <- c("WT1", "WT2","WT3","WT4","KOA1", "KOA2", "KOA3", "KOA4", "KOB1", "KOB2", "KOB3", "KOB4")
+
+# Check data is what we expect
+str(read.counts)
+head (read.counts, n = 3)
+
+```
+
+Extract just read count data for Control & KOA or Control & KOB for individual analysis
+
+- Remove KOB samples
+```{r echo = T, results = 'hide'}
+read.counts.KOA <- read.counts[,-c(9:12)]
+str(read.counts.KOA)
+head(read.counts.KOA, n = 3)
+```
+- remove KOA samples
+```{r echo = T, results = 'hide'}
+read.counts.KOB <- read.counts[,-c(5:8)]
+str(read.counts.KOB)
+head (read.counts.KOB, n = 3)
+```
+
+# Read in gtf file with Gene IDs and Gene names
+```{r echo = T, results = 'hide'}
+gtf <- read.table("~/Downloads/Homo_sapiens.GRCh38.98_gene_annotation_table.txt", sep="\t", header=T)
+
+gtf$Geneid <- gtf$gene_id
+```
+
+# 2) Create a meta-data dataframe for use in DeSeq2 
+Create the ColData for DeSeq2 which contains information on the conditions, confounders etc
+The conditions and sample names should correspond to the column names of read.counts
+
+Create a data-frame with a column called condition which is WT or KO
+ *Use the column names of read.counts dataframe i.e WT1,WT2 etc but remove the digits so just called WT or KOA or KOB*
+```{r echo = T, results = 'hide'}
+sample_info <- data.frame(condition = gsub("[[:digit:]]+", "", names(read.counts)),
+                          row.names = names(read.counts))
+
+```
+
+Replace WT with Control
+```{r echo = T, results = 'hide'}
+sample_info$condition <- ifelse(sample_info$condition=="WT", "WT", ifelse(sample_info$condition=="KOA", "KOA", "KOB"))
+```
+
+Change to a factor column not character
+```{r echo = T, results = 'hide'}
+sample_info$condition <- as.factor(sample_info$condition)
+```
+Alter the levels so that WT is recognised as 'level 1'
+```{r echo = T, results = 'hide'}
+sample_info$condition %<>% relevel("WT")
+```
+Check we have what we want
+```{r echo = T, results = 'hide'}
+sample_info$condition
+```
+
+Create a column of sample name using the column names of the read.counts dataframe
+```{r echo = T, results = 'hide'}
+sample_info$sample <- names(read.counts)
+sample_info$sample <- factor(sample_info$sample, levels=c("WT1", "WT2","WT3","WT4","KOA1","KOA2","KOA3","KOA4","KOB1","KOB2","KOB3","KOB4"))
+sample_info$sample %<>% relevel("WT1")
+```
+
+Create a column for biological replicate where WT sample 1 = 1, WT 2=2 etc
+```{r echo = T, results = 'hide'}
+library(stringr)
+regexp <- "[[:digit:]]+"
+sample_info$rep <- data.frame(rep = gsub("(.*)-", "", names(read.counts)),
+                          row.names = names(read.counts))
+
+sample_info$rep <- str_extract(names(read.counts), regexp)
+sample_info$rep <- as.factor(sample_info$rep)
+```
+
+Create a column for Genotype where WT or KO i.e combines KOA & KOB to just KO
+Use this column to combine all KO samples
+```{r echo = T, results = 'hide'}
+sample_info$genotype <- ifelse(sample_info$condition=="WT", "WT", ifelse(sample_info$condition=="KOA", "KO", "KO"))
+sample_info$genotype <- as.factor(sample_info$genotype) # change column to factor not character
+sample_info$genotype %<>% relevel("WT") # relevel to ensure WT is level 1
+sample_info$genotype # check it is what we expect
+```
+
+
+Create a column for cell line where WT is one cell line, KOA is another cell line regardless of replicate and KOB is a cellline regardless of replicate
+```{r echo = T, results = 'hide'}
+sample_info$cellline <- ifelse(sample_info$condition=="WT", "0", ifelse(sample_info$condition=="KOA", "1", "2"))
+sample_info$cellline <- as.factor(sample_info$cellline) # change to factor 
+```
+
+Set up meta-data just for KOA vs Control
+```{r echo = T, results = 'hide'}
+sample_info_KOA <- data.frame(condition = gsub("[0-9]+", "", names(read.counts.KOA)),
+                          row.names = names(read.counts.KOA))
+
+sample_info_KOA$condition <- ifelse(sample_info_KOA$condition=="WT", "WT", "KOA")
+sample_info_KOA$condition <- as.factor(sample_info_KOA$condition)
+
+# alter the levels so that WT is recogised as 'level 1'
+sample_info_KOA$condition %<>% relevel("WT")
+sample_info_KOA$condition
+
+# create a column of sample name
+sample_info_KOA$sample <- names(read.counts.KOA)
+sample_info_KOA$sample <- factor(sample_info_KOA$sample, levels=c("WT1", "WT2","WT3","WT4","KOA1","KOA2","KOA3","KOA4"))
+sample_info_KOA$sample %<>% relevel("WT1")
+
+# create a column for biological replicate where WT sample 1 = 1, WT 2=2 etc
+library(stringr)
+regexp <- "[[:digit:]]+"
+sample_info_KOA$rep <- str_extract(names(read.counts.KOA), regexp)
+sample_info_KOA$rep <- as.factor(sample_info_KOA$rep)
+
+# create a column for Genotype where name WT or KO
+# use this column to combine all KO samples
+sample_info_KOA$genotype <- ifelse(sample_info_KOA$condition=="WT", "WT", ifelse(sample_info_KOA$condition=="KOA", "KO", "KO"))
+sample_info_KOA$genotype <- as.factor(sample_info_KOA$genotype)
+sample_info_KOA$genotype %<>% relevel("WT")
+sample_info_KOA$genotype
+
+# create a column for cell line where WT is one cell line, KOA is another cell line regardless of replicate and KOB is a cellline regardless of replicate
+sample_info_KOA$cellline <- ifelse(sample_info_KOA$condition=="WT", "0", ifelse(sample_info_KOA$condition=="KOA", "1", "2"))
+sample_info_KOA$cellline <- as.factor(sample_info_KOA$cellline)
+```
+
+Set up meta-data just for KOB vs Control
+```{r echo = T, results = 'hide'}
+## KOB meta-data
+sample_info_KOB <- data.frame(condition = gsub("[0-9]+", "", names(read.counts.KOB)),
+                              row.names = names(read.counts.KOB))
+
+sample_info_KOB$condition <- ifelse(sample_info_KOB$condition=="WT", "WT", "KOB")
+sample_info_KOB$condition <- as.factor(sample_info_KOB$condition)
+
+# alter the levels so that WT is recogised as 'level 1'
+sample_info_KOB$condition %<>% relevel("WT")
+sample_info_KOB$condition
+
+# create a column of sample name
+sample_info_KOB$sample <- names(read.counts.KOB)
+sample_info_KOB$sample <- factor(sample_info_KOB$sample, levels=c("WT1", "WT2","WT3","WT4","KOB1","KOB2","KOB3","KOB4"))
+sample_info_KOB$sample %<>% relevel("WT1")
+
+# create a column for biological replicate where WT sample 1 = 1, WT 2=2 etc
+library(stringr)
+regexp <- "[[:digit:]]+"
+sample_info_KOB$rep <- str_extract(names(read.counts.KOB), regexp)
+sample_info_KOB$rep <- as.factor(sample_info_KOB$rep)
+
+# create a column for Genotype where name WT or KO
+# use this column to combine all KO samples
+sample_info_KOB$genotype <- ifelse(sample_info_KOB$condition=="WT", "WT", ifelse(sample_info_KOB$condition=="KOB", "KO", "KO"))
+sample_info_KOB$genotype <- as.factor(sample_info_KOB$genotype)
+sample_info_KOB$genotype %<>% relevel("WT")
+sample_info_KOB$genotype
+
+# create a column for cell line where WT is one cell line, KOA is another cell line regardless of replicate and KOB is a cellline regardless of replicate
+sample_info_KOB$cellline <- ifelse(sample_info_KOB$condition=="WT", "0", ifelse(sample_info_KOB$condition=="KOB", "1", "2"))
+sample_info_KOB$cellline <- as.factor(sample_info_KOB$cellline)
+
+```
+
+Assign colours to the different groups in the meta-data data-frame
+# we can use these colours later to colour groups 
+```{r echo = T, results = 'hide'}
+library("RColorBrewer")
+col.genotype <- colorRampPalette(c("royalblue", "red3"))(length(unique(sample_info$genotype)))[factor(sample_info$genotype)]
+col.condition <- colorRampPalette(c("lightblue2", "orange", "deeppink"))(length(unique(sample_info$condition)))[factor(sample_info$condition)]
+col.rep <- colorRampPalette(c("snow2", "azure2","lightblue2","steelblue2"))(length(unique(sample_info$rep)))[factor(sample_info$rep)]
+col.sample <- colorRampPalette(c("cadetblue1", "cadetblue2","cadetblue3","cadetblue4", "brown1", "brown2","brown3","brown4","deeppink", "deeppink1", "deeppink2", "deeppink3"))(length(unique(rownames(sample_info))))
+```
+
+# 3. Filter the data now if wanted
+*Can filter here or filter once data has been correctly read into DeSeq2 (commands for this below after reading data into DeSeq2)*
+
+Remove transcripts whose mean raw count across all samples falls below 10
+```{r echo = T, results = 'hide'}
+#ZeroCountFilterIndices <- which(apply(read.counts, 1, mean)<10)
+#print(paste("Total transcripts with mean<10 counts (all samples):", length(ZeroCountFilterIndices), sep=" "))
+#if (length(ZeroCountFilterIndices)>0)
+#{
+# filtered_readcounts <- read.counts[-ZeroCountFilterIndices,]
+#}
+```
+
+Check if all genes have at least 1 zero (generates error with DESeq2
+1. This first converts the entire data frame to TRUE or FALSE (0 or non-zero)
+2. It then applies the table function per row, which gives TRUE and FALSE tallies per gene
+3. It then checks if any tally equals the total number of samples - as we've already eliminated genes with all 0 values, the only condition that can meet ncol(txi.working$counts) is the FALSE (non-zero) condition
+This produces a further TRUE or FALSE for each gene and condition
+4. Finally, if any TRUE values are present, then we know that at least 1 row has a non-zeros, and therefore we can proceed
+```{r echo = T, results = 'hide'}
+#if (!any(data.frame(unlist(apply((filtered_readcounts==0), 1, function(x) table(x))))==ncol(filtered_readcounts)))
+#{
+#  print("All genes contain at least 1 zero.")
+#  next()
+#}
+```
+
+
+# 4. Generate the DeSeq2DataSet  
+Install DeSeq2
+```{r echo = T, results = 'hide'}
+#BiocManager::install()
+#BiocManager::install("DESeq2")
+```
+
+Load in DE-Seq2
+```{r echo = T, results = 'hide'}
+library(DESeq2)
+library(DESeq2)
+```
+
+Convert the data to DESeq format and specify the model
+We want to test for the effect of genotype (combining all KOs as KO)
+*Make sure that control/WT is the first level of a factor i.e the control level*
+```{r echo = T, results = 'hide'}
+library("magrittr")
+sample_info$genotype
+# for all KOs combined
+dds <- DESeqDataSetFromMatrix(countData=read.counts, #this is the count results data-frame, 
+                              colData=sample_info, #this is the data-frame containing information on samples, 
+                              design= ~genotype) #specify the design model - here we want to test WT against KO
+
+# for Control vs KOA combined
+sample_info_KOA$genotype
+dds_KOA <- DESeqDataSetFromMatrix(countData=read.counts.KOA, #this is the count results data-frame, 
+                              colData=sample_info_KOA, #this is the data-frame containing information on samples, 
+                              design= ~genotype) #specify the design model - here we want to test WT against KOA
+
+# for Control vs KOB combined
+sample_info_KOB$genotype
+dds_KOB <- DESeqDataSetFromMatrix(countData=read.counts.KOB, #this is the count results data-frame, 
+                              colData=sample_info_KOB, #this is the data-frame containing information on samples, 
+                              design= ~genotype) #specify the design model - here we want to test WT against KOB
+```
+
+Check the DeSeq2 dataset has been read in correctly
+```{r echo = T, results = 'hide'}
+colData(dds) %>% head
+assay(dds, "counts") %>% head
+rowData(dds) %>% head
+# test what counts () returns
+counts(dds) %>% str
+```
+
+Filter (this is very similar to what would have been done above but you can do it the deseq2 dataframe instead) 
+
+*Remove any genes where the expresison is < 1*
+```{r echo = T, results = 'hide'}
+nrow(dds)
+keep <- rowSums(counts(dds)) > 1
+dds <- dds[keep,]
+nrow(dds)
+
+# For Control vs KOA
+nrow(dds_KOA)
+keep <- rowSums(counts(dds_KOA)) > 1
+dds_KOA <- dds_KOA[keep,]
+nrow(dds_KOA)
+
+# For Control vs KOB
+nrow(dds_KOB)
+keep <- rowSums(counts(dds_KOB)) > 1
+dds_KOB <- dds_KOB[keep,]
+nrow(dds_KOB)
+```
+
+Investigate different library sizes
+```{r echo = T, results = 'hide'}
+colSums(counts(dds))
+colSums(read.counts)
+```
+
+# 5) Normalise the data 
+DESeq2's default method to normalize read counts to account for differences in sequencing depths is implemented in estimateSizeFactors()
+```{r echo = T, results = 'hide'}
+dds <- estimateSizeFactors(dds)
+sizeFactors(dds)
+```
+If you check colData () again , you see that this now contains the sizeFactors
+```{r echo = T, results = 'hide'}
+colData(dds)
+```
+Counts() allows you to immediately retrieve the _normalized_read counts
+```{r echo = T, results = 'hide'}
+norm <- counts(dds, normalized=TRUE)
+```
+*Control vs KOA*
+DESeq2's default method to normalize read counts to account for differences in sequencing depths is implemented in estimateSizeFactors()
+```{r echo = T, results = 'hide'}
+dds_KOA <- estimateSizeFactors(dds_KOA)
+sizeFactors(dds_KOA)
+# if you check colData () again , you see that this now contains the sizeFactors
+colData(dds_KOA)
+
+# counts () allows you to immediately retrieve the _normalized_read counts
+norm_KOA <- counts(dds_KOA, normalized=TRUE)
+```
+
+*Control vs KOB*
+DESeq2's default method to normalize read counts to account for differences in sequencing depths is implemented in estimateSizeFactors()
+```{r echo = T, results = 'hide'}
+dds_KOB <- estimateSizeFactors(dds_KOB)
+sizeFactors(dds_KOB)
+
+# if you check colData () again , you see that this now contains the sizeFactors
+colData(dds_KOB)
+
+# counts () allows you to immediately retrieve the _normalized_read counts
+norm_KOB <- counts(dds_KOB, normalized=TRUE)
+```
+
+# 6) Transformation
+
+Downstream analyses (including clustering) work much better if the read counts are transformed to the log scale following normalization.
+
+Transform size-factor normalized read counts to log2 scale using a pseudocount of 1
+```{r echo = T, results = 'hide'}
+log.norm.counts <- log2(norm + 1)
+```
+*can also use this command*
+```{r echo = T, results = 'hide'}
+ntd <- normTransform(dds)
+```
+
+*Control vs KOA*
+```{r echo = T, results = 'hide'}
+# Transform size - factor normalized read counts to log2 scale using a pseudocount of 1
+log.norm.counts.KOA <- log2(norm_KOA + 1)
+```
+*Control vs KOB*
+```{r echo = T, results = 'hide'}
+# Transform size - factor normalized read counts to log2 scale using a pseudocount of 1
+log.norm.counts.KOB <- log2(norm_KOB + 1)
+```
+
+Plotting the transformation 
+```{r echo = T, results = 'hide'}
+par(mfrow =c(3 , 1)) # to plot the following two images underneath each other
+
+# first, plot the normalised data: non-transformed
+boxplot(norm, notch = TRUE ,
+        main = "Untransformed read counts ", ylab = "read counts")
+# second, plot the transformed normalised data
+boxplot(log.norm.counts, notch = TRUE ,
+        main = "Log2 - transformed read counts ",
+        ylab = " log2 (read counts)")
+# this should give exactly the same as log.norm.counts plot
+boxplot(assay(ntd), notch = TRUE ,
+        main = "Log2 - transformed read counts ",
+        ylab = " log2 (read counts)")
+```
+
+
+# 7. Visualise the normalised data 
+
+Plot the counts in a pairwise manner
+```{r echo = T, results = 'hide'}
+plot(log.norm.counts[ ,1:2] , cex =.1 , main = " Normalized log2 ( read counts )")
+```
+
+
+Check for heteroscedascity
+*Many statistical tests and analyses assume that data is homoskedastic, i.e. that all variables have similar variance. However, data with large differences among the sizes of the individual observations often shows heteroskedastic behavior. One way to visually check for heteroskedasticity is to plot the mean vs. the standard deviation*
+
+```{r echo = T, results = 'hide'}
+# BiocManager::install("vsn")
+library("vsn")
+library(ggplot2 )
+
+msd_plot <- meanSdPlot(log.norm.counts,
+                       ranks =FALSE , # show the data on the original scale
+                       plot = FALSE )
+msd_plot$gg +
+  ggtitle ("Sequencing depth normalized log2 (read counts )") +
+  ylab ("Standard Deviation ")
+
+msd_plot <- meanSdPlot(assay(ntd),
+                       ranks =FALSE , # show the data on the original scale
+                       plot = FALSE )
+
+msd_plot$gg +
+  ggtitle ("Sequencing depth normalized log2 (read counts )") +
+  ylab ("Standard Deviation ")
+
+meanSdPlot(assay(ntd))
+
+```
+
+The y-axis shows the variance of the read counts across all samples. Some variability is, in fact, expected, but a clear hump on the left-hand side indicates that for read counts < 32 (2^5 = 32), the variance is higher than for those with greater read counts. That means that there is a dependence of the variance on the mean, which violates the assumption of homoskedasticity.
+
+# 8. Reduce the heteroscedacity 
+Shrink the variance of low read counts
+For RNA-seq counts, however, the expected variance grows with the mean. A simple and often used strategy to avoid this is to take the logarithm of the normalized count values plus a pseudocount of 1; however, depending on the choice of pseudocount, now the genes with the very lowest counts will contribute a great deal of noise to the resulting plot, because taking the logarithm of small counts actually inflates their variance. 
+As a solution, DESeq2 offers two transformations for count data that stabilize the variance across the mean: the variance stabilizing transformation (VST) for negative binomial data with a dispersion-mean trend (Anders and Huber 2010), implemented in the vst function, and the regularized-logarithm transformation or rlog (Love, Huber, and Anders 2014).
+For genes with high counts, both the VST and the rlog will give similar result to the ordinary log2 transformation of normalized counts. For genes with lower counts, however, the values are shrunken towards a middle value. The VST or rlog-transformed data then become approximately homoskedastic (more flat trend in the meanSdPlot), and can be used directly for computing distances between samples, making PCA plots, or as input to downstream methods which perform best with homoskedastic data.
+
+*R log transformation*
+DESeq2's rlog() function returns values that are both normalized for sequencing depth and transformed to the log2 scale where the values are adjusted to it the experiment-wide trend of the variance-mean relationship
+*blind = FALSE means that differences between cell lines and treatment (the variables in the design) will not contribute to the expected variance-mean trend of the experiment. The experimental design is not used directly in the transformation, only in estimating the global amount of variability in the counts.*
+The rlog() function's blind parameter should be set to FALSE if the different conditions lead to strong differences in a large proportion of the genes. If rlog() is applied without incorporating the knowledge of the experimental design (blind = TRUE, the default setting), the dispersion will be greatly overestimated in such cases.
+
+```{r echo = T, results = 'hide'}
+rld <- rlogTransformation(dds, blind = TRUE)
+rldMatrix <- data.matrix(assay(rld))
+head(assay(rld), 3)
+
+## Control vs KOA
+rld_KOA <- rlogTransformation(dds_KOA, blind = TRUE)
+rldMatrixKOA <- data.matrix(assay(rld_KOA))
+
+head(assay(rld_KOA), 3)
+
+## Control vs KOB
+rld_KOB <- rlogTransformation(dds_KOB, blind = TRUE)
+rldMatrixKOB <- data.matrix(assay(rld_KOB))
+
+head(assay(rld_KOB), 3)
+```
+
+Plotting the rlog transformation
+```{r echo = T, results = 'hide'}
+msd_rlog_plot <- meanSdPlot(assay(rld),
+                            ranks =FALSE, # show the data on the original scale
+                            plot = FALSE )
+msd_rlog_plot$gg +
+  ggtitle ("rlog - transformed read counts") +
+  ylab (" standard deviation ")
+
+```
+
+Export the rlog counts
+```{r echo = T, results = 'hide'}
+#write.table(rldMatrixKOB, "../Control vs KOB/RLogCounts_wtvskob.txt", row.names=TRUE, col.names=TRUE, sep="\t", quote=FALSE)
+```
+
+*The variance stabilizing transformation*
+```{r echo = T, results = 'hide'}
+# Control vs KO
+vsd <- vst(dds, blind = TRUE)
+head(assay(vsd), 3)
+colData(vsd)
+vsd.norm.counts <- assay(vsd)
+
+vsdMatrix <- data.matrix(assay(vsd))
+
+# Control vs KOA
+vsd_KOA <- vst(dds_KOA, blind = TRUE)
+head(assay(vsd_KOA), 3)
+colData(vsd_KOA)
+vsd.norm.counts.KOA <- assay(vsd_KOA)
+
+vsdMatrixKOA <- data.matrix(assay(vsd_KOA))
+
+# Control vs KOB
+vsd_KOB <- vst(dds_KOB, blind = TRUE)
+head(assay(vsd_KOB), 3)
+colData(vsd_KOB)
+vsd.norm.counts.KOB <- assay(vsd_KOB)
+
+vsdMatrixKOB <- data.matrix(assay(vsd_KOB))
+
+
+# Plotting the vsd normalisation
+msd_vsd_plot <- meanSdPlot(assay(vsd),
+                           ranks =FALSE, # show the data on the original scale
+                           plot = FALSE )
+msd_vsd_plot$gg +
+  ggtitle ("vsd - transformed read counts ") +
+  ylab (" standard deviation ")
+
+meanSdPlot(assay(vsd))
+
+#write.table(vsdMatrix_KOB, "../Control vs KOB/vsdCounts_wtvskob.txt", row.names=TRUE, col.names=TRUE, sep="\t", quote=FALSE)
+```
+
+# 9. QC plots to check for normalisation and transformation 
+
+*Output dispersion plot*
+Need to have estimated the dispersion distance to plot this
+```{r echo = T, results = 'hide'}
+options(scipen=999)
+dds <- estimateDispersions(dds)
+dds_KOA <- estimateDispersions(dds_KOA)
+dds_KOB <- estimateDispersions(dds_KOB)
+
+par(mfrow =c(1 , 1)) # to plot the following two images underneath each other
+options(scipen=999)
+plotDispEsts(dds, genecol="black", fitcol="red", finalcol="dodgerblue", legend=TRUE, log="xy", cex.axis=0.8, cex=0.3, cex.main=0.8, xlab="Mean of normalised counts", ylab="Dispersion")
+options(scipen=0)
+```
+
+Histograms to check normalisation methods
+```{r echo = T, results = 'hide'}
+hist(norm, breaks=100, xlab="Counts", col="grey", main="Normalised counts")
+hist(norm, breaks=10000, xlab="Counts", xlim=c(0,2500), col="grey", main="Normalised counts\n(zoomed range 0:2500)")
+hist(log2(norm + 1), breaks=10, xlab="Counts", col="grey", main=bquote(~Log[2]~normalised~counts))
+hist(rldMatrix, xlab="Counts", breaks=50, col="grey", main="Regularised log counts")
+hist(vsdMatrix, xlab="Counts", col="grey", main="Variance Stablised counts")
+```
+
+Boxplots to check normalisation
+```{r echo = T, results = 'hide'}
+#par(mar=c(3,3,3,3), mfrow=c(5,1), cex=1, cex.axis=0.8)
+boxplot(norm, main="Normalised counts", xlab="", ylab="Normalised counts", names=paste(sample_info$sample), col=col.sample, las=2)
+boxplot(log2(norm+1), main="Log2 + 1 Normalised counts", xlab="", ylab="Log2 +1 Normalised counts", names=paste(sample_info$sample), col=col.sample, las=2)
+boxplot(rldMatrix, main="Regularised log counts", xlab="", ylab="Regularised log counts", names=paste(sample_info$sample), col=col.sample, las=2)
+boxplot(rldMatrix, main="Regularised log counts\n(outlier genes removed)", xlab="", ylab="Regularised log counts", names=paste(sample_info$sample), col=col.sample, las=2, outline=FALSE)
+boxplot(vsdMatrix, main="Variance Stablised counts", xlab="", ylab="Variance Stablised counts", names=paste(sample_info$sample), col=col.sample, las=2)
+boxplot(vsdMatrix, main="Variance Stablised counts\n(outlier genes removed)", xlab="", ylab="Variance Stablised counts", names=paste(sample_info$sample), col=col.sample, las=2, outline=FALSE)
+```
+
+Plotting the normalisation methods on scatter
+```{r echo = T, results = 'hide'}
+library("dplyr")
+library("ggplot2")
+
+norm_methods  <- bind_rows(
+  as_tibble(log.norm.counts) %>%
+    mutate(transformation = "log2(x + 1)"),
+  as_data_frame(assay(vsd)[, 1:2]) %>% mutate(transformation = "vst"),
+  as_data_frame(assay(rld)[, 1:2]) %>% mutate(transformation = "rlog"))
+
+colnames(norm_methods)[1:2] <- c("x", "y")  
+ggplot(norm_methods, aes(x = x, y = y)) + geom_hex(bins = 80) +
+  coord_fixed() + facet_grid( . ~ transformation)  
+```
+
+# 10. Hieracheal Clustering 
+
+*Calculating distance between samples*
+Using the R log normalisation
+
+Default method for calculating these distances is Euclidean
+```{r echo = T, results = 'hide'}
+sampleDists_rld <- dist(t(assay(rld)))
+sampleDists_rld
+
+## Control vs KOA
+sampleDists_rld_KOA <- dist(t(assay(rld_KOA)))
+sampleDists_rld_KOA
+
+## Control vs KOB 
+sampleDists_rld_KOB <- dist(t(assay(rld_KOB)))
+sampleDists_rld_KOB
+
+#Save the distances between samples to table
+sampleDistMatrix_rld <- as.matrix(sampleDists_rld)
+sampleDistMatrix_rld_KOA <- as.matrix(sampleDists_rld_KOA)
+sampleDistMatrix_rld_KOB <- as.matrix(sampleDists_rld_KOB)
+
+#write.table(as.matrix(sampleDists_rld_KOB), "../Control vs KOB/SampleDistance_rlog_wtvskob.txt", row.names=T, col.names=T, sep="\t", quote=F)
+
+## Using the vsd normalisation
+sampleDists_vsd <- dist(t(assay(vsd)))
+sampleDists_vsd
+```
+
+Heat map to visualise distance between samples
+*uses the normalised count matrix*
+```{r echo = T, results = 'hide'}
+library("pheatmap")
+library("RColorBrewer")
+
+# call the row names and the column name
+rownames(sampleDistMatrix_rld) <- paste(rld$sample)
+colnames(sampleDistMatrix_rld) <- paste(rld$sample)
+
+# change the cluster method to ward.D2
+hc <- hclust(sampleDists_rld, method="ward.D2")
+
+# create colours
+colors <- colorRampPalette(rev(brewer.pal(9, "Blues")))(255)
+mycols <- brewer.pal(3, "Blues")[1:length(unique(sample_info$condition))]
+
+# change the order to make WT be the first sample
+callback = function(hc, mat){
+  sv = svd(t(mat))$v[,1]
+  dend = reorder(as.dendrogram(hc), wts = sv)
+  as.hclust(dend)
+}
+
+# plot heat map
+pheatmap(sampleDistMatrix_rld,
+         clustering_distance_rows = sampleDists_rld,
+         clustering_distance_cols = sampleDists_rld,
+         col = colors,
+        clustering_callback = callback)
+```
+
+Heat map using gplots
+```{r echo = T, results = 'hide'}
+library(gplots)
+heatmap.2(as.matrix(sampleDists_rld), key=T, trace="none",
+          col=colors,
+          #Rowv=F, Colv=F,
+          Rowv=as.dendrogram(hc),
+          cexRow = 1.5, cexCol=1.5,
+          symm=TRUE,
+         ColSideColors=mycols[sample_info$condition], RowSideColors=mycols[sample_info$condition],
+          margin=c(5, 5), main="Sample Distance Matrix",  key.title="Sample similarity", key.xlab="Euclidean distance", key.ylab="")
+
+```
+
+*Plot distibution and density with violin plots*
+```{r echo = T, results = 'hide'}
+violinMatrix <- reshape2::melt(rldMatrix, id.vars=NULL)
+
+colnames(violinMatrix) <- c("Gene","Sample","Expression")
+
+library(ggplot2)
+ggplot(violinMatrix, aes(x=Sample, y=Expression)) + geom_violin() + theme(axis.text.x = element_text(angle=45, hjust=1), axis.line= element_line(colour = "black"),panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+                                                                          panel.background = element_blank())
+
+```
+
+*Dendogram*
+cor () calculates the correlation between columns of a matrix
+
+Calculate Pearson's correlation distance
+```{r echo = T, results = 'hide'}
+distance.rld <- as.dist(1 - cor(assay(rld), method = "pearson" ))
+distance.rld.KOA <- as.dist(1 - cor(assay(rld_KOA), method = "pearson" ))
+distance.rld.KOB <- as.dist(1 - cor(assay(rld_KOB), method = "pearson" ))
+```
+
+plot () can directly interpret the output of hclust()
+
+```{r echo = T, results = 'hide'}
+par(cex=1.0, cex.axis=0.8, cex.main=0.8)
+plot(hclust(distance.rld),
+     labels = colnames(rld),
+     main = "rlog transformed Read Counts Distance: Pearson Correlation")
+```
+
+Circular dendrogram and regular dendrogram
+```{r echo = T, results = 'hide'}
+distmatrix <- dist(t(rldMatrix), method="euclidean")
+hclustObject <- hclust(distmatrix, method="ward.D2")
+dend <- as.dendrogram(hclustObject)
+plot(dend, ylab="Height", main="rlog transformed Read Counts Distance: Euclidean Distance")
+```
+
+*Circular dendrogram*
+```{r echo = T, results = 'hide'}
+library(circlize)
+library(dendextend)
+
+#Get the heights for each branch
+heights <- round(get_branches_heights(dend, sort=FALSE), 1)
+
+#Get max height
+maxHeight= max(heights)
+
+#Set label and dendrogram height for cicular dendrogram
+labelHeight=0.1
+dendHeight=0.8
+
+labels(dend) <- gsub("\\.[0-9]$", "", labels(dend))
+
+#Draw the circular dendrogram
+circlize_dendrogram(dend, facing="outside", labels=TRUE, labels_track_height=labelHeight, dend_track_height=dendHeight, cex=0.6)
+
+#Create tick co-ordinates and values for the new axis
+#We have to enure that we don't overlap the label plot region (height specified by labelHeight), nor the central region of the plot (1-(dendHeight+labelHeight))
+ticks <- seq(from=(1-(dendHeight+labelHeight)), to=(1-labelHeight), length.out=5)
+values <- round(rev(seq(from=0, to=maxHeight, length.out=5)), 1)
+
+#Add the new axis
+library(plotrix)
+ablineclip(h=0, v=ticks, col="black", x1=1-(dendHeight+labelHeight), x2=1-labelHeight, y1=0, y2=0.04, lwd=1.5)
+text(ticks, 0+0.08, values, cex=0.8)
+text((1-labelHeight)-(((1-labelHeight)-(1-(dendHeight+labelHeight)))/2), 0+0.14, "Height")
+```
+
+*Scatterplots*
+Perform pairwise scatter plots on the samples
+```{r echo = T, results = 'hide'}
+#library(car)
+#scatterplotMatrix(rldMatrix[,c("WT1","WT2","WT3","WT4")], diagonal="boxplot", pch=".")
+#scatterplotMatrix(rldMatrix[,c("KOA1","KOA2","KOA3","KOA4")], diagonal="boxplot", pch=".")
+#scatterplotMatrix(rldMatrix[,c("WT1","WT2","WT3","WT4","WT4","KOA1","KOA2","KOA3","KOA4","KOB1","KOB2", "KOB3","KOB4")], diagonal="boxplot", pch=".")
+```
+
+# 11. PCA plots
+PCA analysis using R function
+```{r echo = T, results = 'hide'}
+project.pca <- prcomp(t(assay(rld)))
+
+plot(project.pca$x[,1], project.pca$x[,2],
+     col = col.sample,
+     xlab="PC1",
+     ylab="PC2",
+     main = "PCA of seq.depth normalized \n and rlog - transformed read counts")
+
+rownames(rldMatrix) <- rownames(dds)
+
+# Control vs KOA
+project.pca.KOA <- prcomp(t(assay(rld_KOA)))
+# Control vs KOB
+project.pca.KOB <- prcomp(t(assay(rld_KOB)))
+```
+
+Accessing the PCA results
+```{r echo = T, results = 'hide'}
+library(factoextra)
+# Eigenvalues
+eig.val <- get_eigenvalue(project.pca)
+eig.val
+
+#results for variable
+res.var <- get_pca_var(project.pca)
+head(res.var$contrib, n=3)      # Contributions to the PCs
+head(res.var$coord, n=3)
+
+# results for samples
+res.ind <- get_pca_ind(project.pca)
+head(res.ind$coord, n=3)          # Coordinates
+head(res.ind$contrib, n=3)       # Contributions to the PCs
+head(res.ind$cos2, n=3)         # Quality of representation 
+
+# results of PCs for samples
+project.pca$x
+sample_info$projectpca2 <- project.pca$x[,"PC1"]
+sample_info$projectpca3 <- project.pca$x[,"PC2"]
+```
+
+Determine the proportion of variance of each component
+Proportion of variance equals (PC stdev^2) / (sum all PCs stdev^2)
+```{r echo = T, results = 'hide'}
+project.pca.proportionvariances <- ((project.pca$sdev^2) / (sum(project.pca$sdev^2)))*100
+# Control vs KOA
+project.pca.proportionvariances.KOA <- ((project.pca.KOA$sdev^2) / (sum(project.pca.KOA$sdev^2)))*100
+
+#Control vs KOB
+project.pca.proportionvariances.KOB <- ((project.pca.KOB$sdev^2) / (sum(project.pca.KOB$sdev^2)))*100
+```
+
+*Scree plot of PCA*
+
+```{r echo = T, results = 'hide'}
+barplot(project.pca.proportionvariances, cex.names=1, xlab=paste("Principal component (PC), 1-", length(project.pca$sdev)), ylab="Proportion of variation (%)", main="Scree plot", ylim=c(0,100))
+```
+
+*Scatter Plot of PCA 1-4*
+```{r echo = T, results = 'hide'}
+par(xpd=TRUE)
+pairs(project.pca$x[,1:4], col=col.sample, main="Principal components analysis bi-plot\nPCs 1-4", pch=16, oma=c(2,2,2,13))
+legend("bottomright", cex=0.75, fill = unique(col.sample), legend = c( levels(sample_info$sample)))
+```
+
+*Scatter Plot of PCA 5-8*
+```{r echo = T, results = 'hide'}
+par(xpd=TRUE)
+pairs(project.pca$x[,5:8], col=col.sample, main="Principal components analysis bi-plot\nPCs 6-10", pch=16, oma=c(2,2,2,13))
+legend("bottomright", cex=0.75, fill = unique(col.sample), legend = c( levels(sample_info$sample)))
+```
+
+*Scatter Plots*
+```{r echo = T, results = 'hide'}
+
+par(mar=c(4,4,4,4), mfrow=c(2,3), cex=1.0, cex.main=0.5, cex.axis=0.8)
+
+#Plots scatter plot for PC 1 and 2
+plot(project.pca$x, type="n", #main="Principal components analysis bi-plot", 
+     xlab=paste("PC1, ", round(project.pca.proportionvariances[1], 2), "%"), ylab=paste("PC2, ", round(project.pca.proportionvariances[2], 2), "%"))
+points(project.pca$x, col=col.sample, pch= c(15, 16, 17, 18), cex=1.5)
+
+
+#Plots scatter plot for PC 1 and 3
+plot(project.pca$x[,1], project.pca$x[,3], type="n", main="Principal components analysis bi-plot", xlab=paste("PC1, ", round(project.pca.proportionvariances[1], 2), "%"), ylab=paste("PC3, ", round(project.pca.proportionvariances[3], 2), "%"))
+points(project.pca$x[,1], project.pca$x[,3], col=col.sample, pch= c(15, 16, 17, 18), cex=1)
+
+#Plots scatter plot for PC 2 and 3
+plot(project.pca$x[,2], project.pca$x[,3], type="n",main="Principal components analysis bi-plot",  xlab=paste("PC2, ", round(project.pca.proportionvariances[2], 2), "%"), ylab=paste("PC3, ", round(project.pca.proportionvariances[3], 2), "%"))
+points(project.pca$x[,2], project.pca$x[,3], col=col.sample, pch= c(15, 16, 17, 18), cex=1)
+
+#Plots scatter plot for PC 2 and 4
+plot(project.pca$x[,2], project.pca$x[,4], type="n", main="Principal components analysis bi-plot", xlab=paste("PC2, ", round(project.pca.proportionvariances[2], 2), "%"), ylab=paste("PC4, ", round(project.pca.proportionvariances[4], 2), "%"))
+points(project.pca$x[,2], project.pca$x[,4], col=col.sample, pch= c(15, 16, 17, 18), cex=1)
+
+#Plots scatter plot for PC 3 and 4
+plot(project.pca$x[,3], project.pca$x[,4], type="n",main="Principal components analysis bi-plot", xlab=paste("PC3, ", round(project.pca.proportionvariances[3], 2), "%"), ylab=paste("PC4, ", round(project.pca.proportionvariances[4], 2), "%"))
+points(project.pca$x[,3], project.pca$x[,4], col=col.sample, pch= c(15, 16, 17, 18), cex=1)
+
+par(xpd=TRUE)
+plot.new()
+legend("bottomright", bty="n", cex=0.8, title="Condition", legend=c("Control 1","Control 2","Control 3","Control 4","KOA1","KOA2","KOA3","KOA4","KOB1","KOB2","KOB3", "KOB4"), col=c(col.sample), pch=c(15, 16, 17, 18))
+```
+
+*3D scatter plot of PCAs*
+```{r echo = T, results = 'hide'}
+library(scatterplot3d)
+par(mar=c(4,4,4,4), mfrow=c(2,2), cex=1.0, cex.main=0.8, cex.axis=0.8)
+
+scatterplot3d(project.pca$x[,1:3], angle=-40, main="", color=col.genotype, pch=17, xlab=paste("PC1, ", round(project.pca.proportionvariances[1], 2), "%"), ylab=paste("PC2, ", round(project.pca.proportionvariances[2], 2), "%"), zlab=paste("PC3, ", round(project.pca.proportionvariances[3], 2), "%"), grid=FALSE, box=FALSE)
+source('http://www.sthda.com/sthda/RDoc/functions/addgrids3d.r')
+addgrids3d(project.pca$x[,2:4], grid = c("xy", "xz", "yz"))
+
+par(xpd=TRUE)
+plot.new()
+legend("left", bty="n", cex=0.8, title="Condition", c("Control 1","Control 2","Control 3","Control 4","KOA1","KOA2","KOA3","KOA4","KOB1","KOB2","KOB3", "KOB4"), fill=c(col.genotype))
+
+scatterplot3d(project.pca$x[,1:3], angle=40, main="", color=col.condition, pch=17, xlab=paste("PC1, ", round(project.pca.proportionvariances[1], 2), "%"), ylab=paste("PC2, ", round(project.pca.proportionvariances[2], 2), "%"), zlab=paste("PC3, ", round(project.pca.proportionvariances[3], 2), "%"), grid=FALSE, box=FALSE)
+source('http://www.sthda.com/sthda/RDoc/functions/addgrids3d.r')
+addgrids3d(project.pca$x[,2:4], grid = c("xy", "xz", "yz"))
+
+par(xpd=TRUE)
+plot.new()
+legend("left", bty="n", cex=0.8, title="Condition", c("Control 1","Control 2","Control 3","Control 4","KOA1","KOA2","KOA3","KOA4","KOB1","KOB2","KOB3", "KOB4"), fill=c(col.condition))
+```
+
+Write out eigenvector 1 eigenvalues as PC1 seperates the control from KO the best
+```{r echo = T, results = 'hide'}
+library(plyr); library(dplyr)
+project.pca <- prcomp(t(rldMatrix))
+summary(project.pca)
+project.pca.proportionvariances <- ((project.pca$sdev^2) / (sum(project.pca$sdev^2)))*100
+
+# get the eigenvalues for PC1 for each gene (Control vs KO)
+
+PC1_values <- data.frame(abs(project.pca$rotation[,c("PC1")]))
+
+PC1_values<- data.frame(rownames(PC1_values), PC1_values)
+head(PC1_values, n=3)
+
+# Change the column names
+names(PC1_values) <- c("Geneid","PC1")
+
+PC1_values <- join(PC1_values, gtf, by="Geneid")
+row.names(PC1_values) <- PC1_values$Geneid
+head(PC1_values, n=3)
+
+# Control vs KOA
+PC1_values_KOA <- data.frame(abs(project.pca.KOA$rotation[,c("PC1")]))
+
+PC1_values_KOA <- data.frame(rownames(PC1_values_KOA), PC1_values_KOA)
+head(PC1_values, n=3)
+
+# Change the column names
+names(PC1_values_KOA) <- c("Geneid","PC1")
+
+PC1_values_KOA <- join(PC1_values_KOA, gtf, by="Geneid")
+row.names(PC1_values_KOA) <- PC1_values_KOA$Geneid
+head(PC1_values, n=3)
+
+#Control vs KOB
+PC1_values_KOB <- data.frame(abs(project.pca.KOB$rotation[,c("PC1")]))
+
+PC1_values_KOB <- data.frame(rownames(PC1_values_KOB), PC1_values_KOB)
+head(PC1_values, n=3)
+
+# Change the column names
+names(PC1_values_KOB) <- c("Geneid","PC1")
+
+PC1_values_KOB <- join(PC1_values_KOB, gtf, by="Geneid")
+row.names(PC1_values_KOB) <- PC1_values_KOB$Geneid
+head(PC1_values, n=3)
+
+#write.table(PC1_values_KOA, "~/Documents/EPO Project/CRISPR/Whole gene knock-out/Confirming EPO KO/RNA Sequencing/DeSeq2/Control vs KOA/PC1.Eigenvalues.wtvskoa.csv", col.names=TRUE, row.names=FALSE, quote=FALSE, sep=",")
+
+# If pulling our two eigenvalues
+# wObject <- data.frame(abs(project.pca.KOB$rotation[,c("PC1","PC2")]))
+
+# to calculate the mean if pulling out two eigenvalues
+#PC1_PC2_values <- data.frame(abs(project.pca$rotation[,c("PC1","PC2")]))
+#PC1_PC2_values <- data.frame(rownames(PC1_PC2_values), PC1_PC2_values, apply(PC1_PC2_values, 1, mean))
+#PC1_PC2_values$mean <- (PC1_PC2_values$PC1+PC1_PC2_values$PC2)/2
+#names(PC1_PC2_values) <- c("GeneID","PC1", "PC2", "Mean", "mean")
+
+#PC1_PC2_values
+#write.table(PC1_PC2_values, "PC1.PC2.Eigenvalues.csv", col.names=TRUE, row.names=FALSE, quote=FALSE, sep=",")
+```
+
+Order the results
+```{r echo = T, results = 'hide'}
+# Default of order is ascending 
+# We want to order according to the highest eigenvalue so we want descending
+sorted_PC1_values <- PC1_values[order(-PC1_values$PC1), ]
+head(sorted_PC1_values)
+
+sorted_PC1_values_KOA <- PC1_values_KOA[order(-PC1_values_KOA$PC1), ]
+sorted_PC1_values_KOB <- PC1_values_KOB[order(-PC1_values_KOB$PC1), ]
+
+```
+
+Take top 500 genes
+# wObject <- data.frame(sort(abs(project.pca$rotation[,c("PC1","PC2")]), decreasing=TRUE)[1:500])
+```{r echo = T, results = 'hide'}
+top500_PCA <- data.frame(sort(abs(project.pca$rotation[,c("PC1")]), decreasing=TRUE)[1:500])
+top500_PCA_KOA <- PC1_values_KOA[order(-PC1_values_KOA$PC1),][1:500,]
+top500_PCA_KOB <- PC1_values_KOB[order(-PC1_values_KOB$PC1),][1:500,]
+```
+
+Take Top 20 genes sorted by PC value
+```{r echo = T, results = 'hide'}
+top20_PCA <- PC1_values[order(-PC1_values$PC1),][1:20,]
+```
+
+# 11. Differential Gene Expression 
+DeSeq2 uses a negative binomial model to fit the observed read counts to arrive at the estimate for the difference. We need to estimate two parameters from the read counts: the mean as well as the dispersion. The null hypothesis is that there is no systematic difference between the average read count values of the different conditions for a given gene.
+The p-values are calculated and both tests are some variation of the well-known t-test (How dissimilar are the means of two populations?) or ANOVAs (How well does a reduced model capture the data when compared to the full model with all coefficients?).
+Once you've obtained a list of p-values for all the genes of your data set, it is important to realize that you just performed the same type of test for thousands and thousands of genes. That means, that even if you decide to focus on genes with a p-value smaller than 0.05, if you've looked at 10,000 genes your nal list may contain 0:05/10; 000 = 500 false positive hits. To guard yourself against this, all the tools will over some sort of correction for the multiple hypotheses you tested, e.g. in the form of the Benjamini-Hochberg formula. You should defnitely rely on the adjusted p-values rather than the original ones to zoom into possible candidates for downstream analyses and follow-up studies.
+
+*Running DEG analysis*
+Here we want to look at the effect of the KO's versus the wildtype samples, with the wildtype values used as the denominator for the fold change calculation.
+
+DESeq2 uses the levels of the condition to determine the order of the comparison so it important to set WT as the first-level factor
+```{r echo = T, results = 'hide'}
+str(colData(dds)$genotype)
+colData(dds)$condition <- relevel(colData(dds)$genotype, "WT")
+str(colData(dds)$condition)
+
+str(colData(dds_KOA)$genotype)
+str(colData(dds_KOA)$condition)
+colData(dds_KOA)$condition <- relevel(colData(dds_KOA)$genotype, "WT")
+str(colData(dds_KOA)$condition)
+
+str(colData(dds_KOB)$genotype)
+str(colData(dds_KOB)$condition)
+colData(dds_KOB)$condition <- relevel(colData(dds_KOB)$genotype, "WT")
+str(colData(dds_KOB)$condition)
+
+
+```
+
+Run DeSeq2
+The log2 fold change and Wald test p value will be for the last variable in the design formula (in our case just genotype), and if this is a factor, the comparison will be the last level of this variable (KO) over the reference level (control)
+The order of the variables of the design do not matter so long as the user specifies the comparison to build a results table for, using the name or contrast arguments of results.
+
+The Wald method is the default
+```{r echo = T, results = 'hide'}
+dds <- DESeq(dds, test="Wald")
+dds_KOA <- DESeq(dds_KOA, test="Wald")
+dds_KOB <- DESeq(dds_KOB, test="Wald")
+```
+
+*Log fold change shrinkage for visualisation and ranking*
+Shrinkage of effect size (LFC estimates) is useful for visualization and ranking of genes.
+```{r echo = T, results = 'hide'}
+resultsNames(dds)
+resLFC <- lfcShrink(dds, coef="genotype_KO_vs_WT", type="apeglm")
+head(resLFC, n=3)
+```
+
+# 12) Extract the results 
+By default the argument alpha is set to 0.1. If the adjusted p value cutoff will be a value other than 0.1, alpha should be set to that value: results function automatically performs independent filtering based on the mean of normalized counts for each gene, optimizing the number of genes which will have an adjusted p value below a given FDR cutoff, alpha.
+
+Run the differential tests on the counts matrix and use FDR correction
+NB - use 'independentFiltering=FALSE' and 'cooksCutoff=FALSE' to switch off conversion of values to 'NA' if failing FDR conversion or Cook's Distance, respectively
+
+```{r echo = T, results = 'hide'}
+unique(sample_info$genotype)
+library(DESeq2)
+options(scipen=999)
+
+## Simple Extraction of the results 
+res <- results(dds)
+summary(res)
+
+## Modifying extraction for alpha = 0.05
+ControlvsKO <- results(dds, pAdjustMethod="BH", independentFiltering = TRUE, parallel = FALSE, alpha=0.05)
+Results_convsko <- as.data.frame(ControlvsKO)
+Results_convsko <- data.frame(rownames(Results_convsko), Results_convsko, row.names=rownames(Results_convsko))
+names(Results_convsko)[1] <- "Geneid"
+options(scipen=999)
+head(Results_convsko)
+
+# Merge with the file which contains geneid and gene names
+Results_convsko <- join(Results_convsko, gtf,by="Geneid")
+row.names(Results_convsko) <- Results_convsko$Geneid
+head(Results_convsko)
+
+# Control vs KOA
+ControlvsKOA <- results(dds_KOA, pAdjustMethod="BH", independentFiltering = TRUE, parallel = FALSE, alpha=0.05)
+Results_KOA <- as.data.frame(ControlvsKOA)
+Results_KOA <- data.frame(rownames(Results_KOA), Results_KOA, row.names=rownames(Results_KOA))
+names(Results_KOA)[1] <- "Geneid"
+options(scipen=999)
+head(Results_KOA)
+
+Results_KOA <- join(Results_KOA, gtf,by="Geneid")
+row.names(Results_KOA) <- Results_KOA$Geneid
+head(Results_KOA)
+
+# Control vs KOB
+ControlvsKOB <- results(dds_KOB, pAdjustMethod="BH", independentFiltering = TRUE, parallel = FALSE, alpha=0.05)
+Results_KOB <- as.data.frame(ControlvsKOB)
+Results_KOB <- data.frame(rownames(Results_KOB), Results_KOB, row.names=rownames(Results_KOB))
+names(Results_KOB)[1] <- "Geneid"
+options(scipen=999)
+head(Results_KOB)
+
+Results_KOB <- join(Results_KOB, gtf,by="Geneid")
+row.names(Results_KOB) <- Results_KOB$Geneid
+head(Results_KOB)
+```
+
+
+The DESeqResult object can basically be handled like a data.frame
+```{r echo = T, results = 'hide'}
+table(ControlvsKO$padj < 0.05)
+table(ControlvsKO$padj < 0.05 & abs(ControlvsKO$log2FoldChange)>2)
+```
+
+Combine the deseq2 results with pc values
+```{r echo = T, results = 'hide'}
+merged_pcresults <- merge(Results_convsko, sorted_PC1_values, by="Geneid")
+merged_pcresults_KOA <- merge(Results_KOA, sorted_PC1_values_KOA, by="Geneid")
+merged_pcresults_KOB <- merge(Results_KOB, sorted_PC1_values_KOB, by="Geneid")
+```
+
+Sort results based on PC values
+```{r echo = T, results = 'hide'}
+merged_pcresults_sorted <- merged_pcresults[order(-merged_pcresults$PC1),]
+row.names(merged_pcresults_sorted) <- merged_pcresults_sorted$Geneid
+merged_pcresults_sorted <- merged_pcresults_sorted[,-c(14:18)]
+names(merged_pcresults_sorted)[9:12] <- c("GeneSymbol", "Chromosome", "Class","Strand")
+
+merged_pcresults_sorted_KOA <- merged_pcresults_KOA[order(-merged_pcresults_KOA$PC1),]
+row.names(merged_pcresults_sorted_KOA) <- merged_pcresults_sorted_KOA$Geneid
+merged_pcresults_sorted_KOA <- merged_pcresults_sorted_KOA[,-c(14:18)]
+names(merged_pcresults_sorted_KOA)[9:12] <- c("GeneSymbol", "Chromosome", "Class","Strand")
+
+merged_pcresults_sorted_KOB <- merged_pcresults_KOB[order(-merged_pcresults_KOB$PC1),]
+row.names(merged_pcresults_sorted_KOB) <- merged_pcresults_sorted_KOB$Geneid
+merged_pcresults_sorted_KOB <- merged_pcresults_sorted_KOB[,-c(14:18)]
+names(merged_pcresults_sorted_KOB)[9:12] <- c("GeneSymbol", "Chromosome", "Class","Strand")
+```
+
+Take the top 20 genes according to PCA analysis to obtain their LFC and padj values
+```{r echo = T, results = 'hide'}
+merged_pcresults_sorted_top20 <- merged_pcresults_sorted[order(-merged_pcresults_sorted$PC1),][1:20,]
+merged_pcresults_sorted_top20_KOA <- merged_pcresults_sorted_KOA[order(-merged_pcresults_sorted_KOA$PC1),][1:20,]
+merged_pcresults_sorted_top20_KOB <- merged_pcresults_sorted_KOB[order(-merged_pcresults_sorted_KOB$PC1),][1:20,]
+```
+
+Take the top 500 genes according to PCA analysis to obtain their LFC and padj values
+```{r echo = T, results = 'hide'}
+merged_pcresults_sorted_top500 <- merged_pcresults_sorted[order(-merged_pcresults_sorted$PC1),][1:500,]
+merged_pcresults_sorted_top500_KOA <- merged_pcresults_sorted_KOA[order(-merged_pcresults_sorted_KOA$PC1),][1:500,]
+merged_pcresults_sorted_top500_KOB <- merged_pcresults_sorted_KOB[order(-merged_pcresults_sorted_KOB$PC1),][1:500,]
+```
+
+*How many genes have a padj < 0.05*
+Control vs KO
+```{r echo = T, results = 'hide'}
+sum(merged_pcresults_sorted$padj < 0.05, na.rm=TRUE)
+```
+Control vs KOA
+```{r echo = T, results = 'hide'}
+sum(merged_pcresults_sorted_KOA$padj < 0.05, na.rm=TRUE)
+```
+Control vs KOB
+```{r echo = T, results = 'hide'}
+sum(merged_pcresults_sorted_KOB$padj < 0.05, na.rm=TRUE)
+```
+
+Filter results to those with P<0.05
+```{r echo = T, results = 'hide'}
+merged_pcresults_sorted_sig <- subset(merged_pcresults_sorted, padj<0.05)
+```
+
+Filter results to those with a log2FC>2
+```{r echo = T, results = 'hide'}
+merged_pcresults_sorted_sigFC2 <- subset(merged_pcresults_sorted_sig, abs(log2FoldChange)>=2)
+```
+
+Can do this in one command - P<0.05 & logFC>|2|
+```{r echo = T, results = 'hide'}
+merged_pcresults_sorted_sigFC2 <- subset(merged_pcresults_sorted, padj<=0.05 & abs(log2FoldChange)>=2)
+
+# Control vs KOA
+merged_pcresults_sorted_KOA_sigFC2 <- subset(merged_pcresults_sorted_KOA, padj<=0.05 & abs(log2FoldChange)>=2)
+
+# Control vs KOB
+merged_pcresults_sorted_KOB_sigFC2 <- subset(merged_pcresults_sorted_KOB, padj<=0.05 & abs(log2FoldChange)>=2)
+
+```
+
+Order the results by the smallest pvalue
+```{r echo = T, results = 'hide'}
+merged_pcresults_sorted_pvalue <- merged_pcresults_sorted[order(merged_pcresults_sorted$padj), ]
+```
+Filter the genes which pass a fold change of > 1.5 and padj < 0.05
+```{r echo = T, results = 'hide'}
+merged_pcresults_sorted_sigFC15 <- subset(merged_pcresults_sorted_sig, padj<=0.05 & abs(log2FoldChange)>=1.5)
+```
+
+Filter for upregulated genes
+```{r echo = T, results = 'hide'}
+upregulated_sig_DEGS <- subset(merged_pcresults_sorted_sigFC2, log2FoldChange>0)
+upregulated_sig_DEGS_15 <- subset(merged_pcresults_sorted_sigFC15, log2FoldChange>0)
+
+# Control vs KOA
+upregulated_sig_DEGs_KOA <- subset(merged_pcresults_sorted_KOA_sigFC2, log2FoldChange>0)
+# Control vs KOB
+upregulated_sig_DEGs_KOB <- subset(merged_pcresults_sorted_KOB_sigFC2, log2FoldChange>0)
+```
+
+Filter for downregulated genes
+```{r echo = T, results = 'hide'}
+downregulated_sig_DEGS <- subset(merged_pcresults_sorted_sigFC2, log2FoldChange < 0)
+downregulated_sig_DEGS_15 <- subset(merged_pcresults_sorted_sigFC15, log2FoldChange < 0)
+
+# Control vs KOA
+downregulated_sig_DEGs_KOA <- subset(merged_pcresults_sorted_KOA_sigFC2, log2FoldChange<0)
+# Control vs KOB
+downregulated_sig_DEGs_KOB <- subset(merged_pcresults_sorted_KOB_sigFC2, log2FoldChange<0)
+```
+
+Obtain gene list
+```{r echo = T, results = 'hide'}
+DEG_geneids_FC2 <- row.names(merged_pcresults_sorted_sigFC2)
+DEG_genenames_FC2 <- data.frame(merged_pcresults_sorted_sigFC2$GeneSymbol)
+names(DEG_genenames_FC2) <- c("GeneSymbol")
+head(DEG_genenames_FC2, n=3)
+```
+
+# 13) Plots after Differential Gene Analysis 
+
+*MA Plots*
+The MA plot provides a global view of the relationship between the expression change between conditions (log ratios, M), the average expression strength of the genes (average mean, A) and the ability of the algorithm to detect differential gene expression: genes that pass the significance threshold (adjusted p-value<0.05) are colored in red
+
+Points will be colored red if the adjusted p value is less than 0.05
+```{r echo = T, results = 'hide'}
+# Add two lines where logFC > 2 and logFC < -2
+drawLines <- function() abline(h=c(-2,2),col="dodgerblue",lwd=2)
+
+par(mar=c(4,4,4,4), mfrow=c(1,1), cex=1.0, cex.main=0.5, cex.axis=0.8)
+plot.new()
+
+# MA plot of significant DEGs
+plotMA(ControlvsKO, alpha=0.05, main="WT vs. KO")
+
+# It is more useful visualize the MA-plot for the shrunken log2 fold changes, which remove the noise associated with log2 fold changes from low count genes without requiring arbitrary filtering thresholds.
+plotMA(resLFC, alpha=0.05, main="WT vs. KO Log Fold Shrinkage")
+
+## Changing the thresholds to what you want to see
+## plotting all those which pass p<0.05 with a folchange >2 or <2 or between -2->2
+## lfcThreshold of 1, means log2 fold change is 2
+par(mfrow=c(2,2),mar=c(2,2,1,1))
+
+ylim <- c(-10,10)
+# Two tailed test where log2 FC is > or < lfc threshold
+resGA <- results(dds, lfcThreshold=log2(2), alpha=0.05, altHypothesis="greaterAbs")
+resGA <- results(dds, lfcThreshold=1, alpha=0.05, altHypothesis="greaterAbs")
+
+# p values are the maximum of the upper and lower tests
+resLA <- results(dds, lfcThreshold=log2(2), alpha=0.05, altHypothesis="lessAbs")
+# log2 FC greater than threshold and P<0.05
+resG <- results(dds, lfcThreshold=log2(2), alpha=0.05, altHypothesis="greater")
+# log 2 FC smaller than threshold and P<0.05
+resL <- results(dds, lfcThreshold=log2(2), alpha=0.05, altHypothesis="less")
+
+drawLines <- function() abline(h=c(-1,1),col="dodgerblue",lwd=2)
+plotMA(resGA, ylim=ylim, alpha=0.05); drawLines()
+plotMA(resLA, ylim=ylim, alpha=0.05); drawLines()
+plotMA(resG, ylim=ylim, alpha=0.05); drawLines()
+plotMA(resL, ylim=ylim, alpha=0.05); drawLines()
+
+# Test genes which have fold change more than doubling or less than halving
+# lfcThreshold of 1, means log2 fold change is 2 - doubling
+#res.thr <- results(dds, lfcThreshold=1, alpha=0.05)
+#plotMA(res.thr, ylim=c(-10,10))
+```
+
+*Histogram of p-values*
+```{r echo = T, results = 'hide'}
+par(mfrow=c(1,1), cex=1.5)
+hist(ControlvsKO$padj,
+     col= "grey", border = "white", xlab = "P-adjusted value", ylab = "Frequency",
+     main = "Frequencies of p-values for Control vs KO")
+```
+
+*Bar Plots of Gene expression*
+Plot the gene with the minimum adjusted p-value 
+```{r echo = T, results = 'hide'}
+plotCounts(dds, gene=which.min(ControlvsKO$padj), intgroup="condition", normalized=TRUE)
+```
+More sophisticated plot
+```{r echo = T, results = 'hide'}
+library(ggplot2)
+data <- plotCounts(dds, gene=which.min(ControlvsKO$padj), intgroup=c("genotype","condition","rep", "sample"), returnData=TRUE)
+ggplot(data, aes(x=genotype, y=count, shape=rep, colour=condition)) +
+  scale_shape_manual(name="Replicate",
+                     labels=c("1","2","3","4"),
+                     values = rep(c(15,16,17,18))) +
+  scale_colour_manual(name="Condition",
+                      labels=c("Control", "KO"),
+                      values = rep(c("#B2DFEE","#FFA500"))) +
+  geom_point(position=position_jitter(width=.1,height=0)) +
+  ggtitle("Expression of RPL22L1") +
+  scale_y_log10()
+```
+
+*Read counts of single genes*
+DESeq2 offers a wrapper function to plot read counts for single genes
+
+```{r echo = T, results = 'hide'}
+library (grDevices ) # for italicizing the gene name
+# EPO: ENSG00000130427
+data <- plotCounts(dds, gene="ENSG00000130427", intgroup=c("genotype","condition","rep", "sample"), returnData=TRUE)
+ggplot(data, aes(x=genotype, y=count, col=sample_info$condition, shape=rep)) +
+  geom_point(position=position_jitter(width=.1,height=0)) +
+  ggtitle("Expression of EPO") +
+  scale_y_log10()
+```
+
+*Plot the expression of the top 50 genes on a bar plot*
+```{r echo = T, results = 'hide'}
+# load in packages
+library(tibble)
+library(tidyr)
+library(ggplot2)
+library(tidyverse)
+
+# create tibble
+merged_pcresults_sorted_tb <- merged_pcresults_sorted  %>% 
+  data.frame() %>%
+  rownames_to_column(var="gene") %>% 
+  as_tibble()
+
+# subset to significant DEGs
+DEGs_ControlvsKO_tb <- subset(merged_pcresults_sorted_tb, abs(log2FoldChange) >= 2 & padj<0.05)
+
+# pull out the top 50 DEGS based on pvalue
+top50_DEGs_genes <- DEGs_ControlvsKO_tb %>% 
+  arrange(-PC1) %>% 	#Arrange rows by padj values (can change this if you want to any column)
+  pull(gene) %>% 		#Extract character vector of ordered genes
+  head(n=50) # change this to number you want to pull out
+
+top50_DEG_genes <- merged_pcresults_sorted[top50_DEGs_genes,] # pull out from merged pcresults
+top50_DEG_genes <- data.frame(top50_DEG_genes) #make into a data frame
+top50_DEG_genes$Geneid <- row.names(top50_DEG_genes) # change row names to Gene ID
+top50_DEG_genes <- merge(top50_DEG_genes, gtf, by="Geneid") # merge with gtf file so can obtain gene names
+
+#change the normalised counts into a tibble
+normalized_counts_tb <- norm %>% 
+  data.frame() %>%
+  rownames_to_column(var="gene") %>% 
+  as_tibble()
+
+# pull out the top 50 genes from the normalised counts tibble
+top50_DEG_norm <- normalized_counts_tb %>%
+  filter(gene %in% top50_DEGs_genes)
+
+gathered_top50_DEGs <- top50_DEG_norm %>%
+  tidyr::gather(colnames(top50_DEG_norm)[2:13], key = "sample", value = "normalized_counts")
+
+gathered_top50_DEGs <- inner_join(gathered_top50_DEGs,sample_info, by="sample")
+names(gathered_top50_DEGs)[1] <- "Geneid"
+gathered_top50_DEGs <- inner_join(gtf, gathered_top50_DEGs, by="Geneid")
+gathered_top50_DEGs <- inner_join(merged_pcresults_sorted, gathered_top50_DEGs, by="Geneid")
+
+ggplot(gathered_top50_DEGs) +
+  geom_point(aes(x = GeneSymbol.x, y = normalized_counts, color = condition)) +
+  xlab("Genes") +
+  ylab("Regularised Log Counts") +
+  ggtitle("Top 50 Significantly Differentially Expressed Genes (P<0.05 & abs(Log2FC) > 2)") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size=6)) +
+  theme(plot.title = element_text(hjust = 0.5, size=10))
+```
+
+*Heat Map*
+Plotting Heat maps of the count matrix
+```{r echo = T, results = 'hide'}
+library(pheatmap)
+select <- order(rowMeans(counts(dds,normalized=TRUE)),
+                decreasing=TRUE)[1:50]
+
+df <- as.data.frame(colData(dds)[,c("genotype", "condition", "rep")])
+
+#Heat map of the Count matrix
+pheatmap(data.matrix(norm[select,]), cluster_rows=F, show_rownames=TRUE,
+         cluster_cols=FALSE, annotation_col=df, main="Normalised Counts", cex=0.8)
+
+# on the vsd data
+pheatmap(assay(vsd)[select,], cluster_rows=T, show_rownames=F,
+         cluster_cols=FALSE, annotation_col=df, main="VSD Transformation")
+# onthe rlog data
+pheatmap(assay(rld)[select,], cluster_rows=T, show_rownames=FALSE,
+         cluster_cols=F, annotation_col=df, main="rLog Transformation")
+```
+
+*Heat map of the top most expressed genes based on comparing individual transcripts across all samples*
+Select the most highly expressed genes from the study and perform clustering
+```{r echo = T, results = 'hide'}
+library("RColorBrewer")
+library("gplots")
+
+par(cex=1.0)
+select <- order(rowMeans(norm), decreasing=TRUE)[1:50]
+hmcol <- colorRampPalette(brewer.pal(9, "BuGn"))(50)
+y <- data.matrix(norm[select,])
+
+# now add gene names rather than symbols
+ya <- data.frame(y)
+ya$Geneid <- row.names(ya)
+ya <- join(ya,gtf, by="Geneid")
+row.names(ya) <- ya$GeneSymbol
+ya <- ya[,-c(13:18)]
+ya <- data.matrix(ya)
+
+heatmap.2(ya, main="All samples", cexRow=0.8, cexCol=1.2, offsetCol=1,labCol=c("Control", NA, NA,NA,"   KOA", NA,NA,NA, "   KOB",NA,NA,NA), col=hmcol, Rowv=TRUE, Colv=F, scale="none", ColSideColors=c("#B2DFEE","#B2DFEE", "#B2DFEE",  "#B2DFEE", "#FFA500","#FFA500","#FFA500","#FFA500","#FF1493","#FF1493","#FF1493","#FF1493"), srtCol=0, adjCol=c(-2.2,-68),dendrogram="none", trace="none", key.title="Counts density", key.xlab="Counts", key.ylab="")
+par(xpd=T)
+text(0.05,0.65, "Increasing\nexpression\n(top 50)")	
+arrows(0.05, 0.6, 0.05, 0.4, lwd=3, xpd=T)
+```
+
+*Plot the top 20 DEGs sorted by PC1*
+```{r echo = T, results = 'hide'}
+topgenes <- head(rownames(merged_pcresults_sorted_sigFC2),20)
+topgenes
+mat <- rldMatrix[topgenes,]
+mat <- mat - rowMeans(mat)
+mat2 <- data.frame(mat)
+mat2$Geneid <- row.names(mat2)
+mat2 <- join(mat2, gtf,by="Geneid")
+row.names(mat2) <- mat2$GeneSymbol
+mat2 <- mat2[,-c(13:18)]
+mat2 <- data.matrix(mat2)
+
+hmcol <- colorRampPalette(brewer.pal(11, "RdBu"))(50)
+df <- as.data.frame(colData(dds)[,c("genotype", "condition")])
+heatmap.2(mat2, main="Top 20 DEGs", cexRow=0.8, cexCol=0.8, col=hmcol, Rowv=T, Colv=F, labCol=c("Control", NA,NA,NA,"   KOB",NA,NA,NA), adjCol=c(-1.6,-62),srtCol=0, scale="none", dendrogram="none", trace="none", margin=c(1, 5), key.title="Counts density", key.xlab="Counts", key.ylab="")
+```
+
+*Plot the top 50 DEGs sorted by PC1*
+```{r echo = T, results = 'hide'}
+topgenes <- head(rownames(merged_pcresults_sorted_sigFC2),50)
+mat <- rldMatrix[topgenes,]
+mat <- mat - rowMeans(mat)
+mat2 <- data.frame(mat)
+mat2$Geneid <- row.names(mat2)
+mat2 <- join(mat2, gtf,by="Geneid")
+row.names(mat2) <- mat2$GeneSymbol
+mat2 <- mat2[,-c(13:18)]
+mat2 <- data.matrix(mat2)
+
+hmcol <- colorRampPalette(brewer.pal(11, "RdBu"))(50)
+df <- as.data.frame(colData(dds)[,c("genotype", "condition")])
+
+library(gplots)
+heatmap.2(mat2, main="Top 50 DEGs", cexRow=0.6, cexCol=0.8, col=hmcol, Rowv=T, Colv=F, labCol=c("Control", NA,NA,NA,"   KOB",NA,NA,NA), adjCol=c(-1.6,-62),srtCol=0, scale="none", dendrogram="none", trace="none", margin=c(1, 5), key.title="Counts density", key.xlab="Counts", key.ylab="")
+#pheatmap(mat2, annotation_col=df, fontsize_row = 5, fontsize_col = 7, cluster_cols = F,cluster_rows = T, main="Top 50 DEGs \n P<0.05 & abs|Log2 Fold Change|>2")
+```
+
+Scaled to z-scores
+```{r echo = T, results = 'hide'}
+# scale = "row" converts to z-score scaling within rows
+plot.new()
+heatmap.2(mat2, main="Top 50 DEGs", cexRow=0.6, cexCol=0.8, col=hmcol, Rowv=T, Colv=F, labCol=c("Control", NA,NA,NA,"   KOA",NA,NA,NA,"   KOB",NA,NA,NA), adjCol=c(-1.6,-62),srtCol=0, scale="row", dendrogram="none", trace="none", margin=c(1, 5), key.title="Counts density", key.xlab="Counts", key.ylab="")
+```
+
+Alternative heatmap
+```{r echo = T, results = 'hide'}
+pheatmap(mat2, annotation_col=df, fontsize_row = 5, fontsize_col = 7, cluster_cols = F,cluster_rows = T, main="Top 50 DEGs \n P<0.05 & abs|Log2 Fold Change|>2")
+```
+
+Plotting the top 500 genes by PC1
+```{r echo = T, results = 'hide'}
+topgenes <- head(rownames(merged_pcresults_sorted),500)
+mat <- rldMatrix[topgenes,]
+mat <- mat - rowMeans(mat)
+mat2 <- data.frame(mat)
+mat2$Geneid <- row.names(mat2)
+mat2 <- join(mat2, gtf,by="Geneid")
+row.names(mat2) <- mat2$GeneSymbol
+mat2 <- mat2[,-c(13:18)]
+mat2 <- data.matrix(mat2)
+
+hmcol <- colorRampPalette(brewer.pal(11, "RdBu"))(50)
+df <- as.data.frame(colData(dds)[,c("genotype", "condition")])
+
+# scale = "row" converts to z-score scaling within rows
+heatmap.2(mat2, main="Top 50 DEGs", cexRow=0.6, cexCol=0.8, col=hmcol, Rowv=T, Colv=F, labCol=c("Control", NA,NA,NA,"   KOB",NA,NA,NA), adjCol=c(-1.6,-62),srtCol=0, scale="row", dendrogram="none", trace="none", margin=c(1, 5), key.title="Counts density", key.xlab="Counts", key.ylab="")
+```
+
+
+Plotting all the significant DEGs (p<0.05 & abs|log2FC|>2)
+```{r echo = T, results = 'hide'}
+# load the library with the aheatmap () function
+library(NMF)
+# aheatmap needs a matrix of values , e.g., a matrix of DE genes with the transformed read counts for each replicate
+# identify gene names with desired cut off and fold change cut off
+DEG_genenames_FC2 <- rownames(merged_pcresults_sorted_sigFC2)
+head(DEG_genenames_FC2, n=3)
+DEGs_up <- rownames(merged_pcresults_sorted_sigFC2[merged_pcresults_sorted_sigFC2$log2FoldChange>0,])
+DEGs_down <- rownames(merged_pcresults_sorted_sigFC2[merged_pcresults_sorted_sigFC2$log2FoldChange<0,])
+
+# extract the normalized read counts for DE genes into a matrix
+hm.mat_DGEgenes <- rldMatrix[DEG_genenames_FC2, ]
+hm.mat_DGEgenes_up <- log.norm.counts[DEGs_up, ]
+hm.mat_DGEgenes_down <- log.norm.counts[DEGs_down, ]
+
+# plot the normalized read counts of DE genes sorted by the adjusted p- value
+aheatmap(hm.mat_DGEgenes, Rowv = NA , Colv = NA)
+
+# combine the heatmap with hierarchical clustering
+# aheatmap(hm.mat_DGEgenes,
+         # Rowv = TRUE, Colv=TRUE, # add dendrograms to rows and columns
+         #distfun = "euclidean", hclustfun = "average", annRow=NA, labRow=NA)
+
+# scale the read counts per gene to emphasize the sample-type - specific differences
+# the read count values are scaled per row so that the colors actually represent z-scores rather than the underlying read counts.
+
+annotation = data.frame(condition=sample_info$condition)
+# aheatmap(hm.mat_DGEgenes,
+  #       Rowv = TRUE , Colv = TRUE ,
+   #      distfun = "pearson", hclust = "ward",
+    #     scale = "row",annCol = annotation, labRow=NA, annRow=NA, main="Heat Map \n DEG Genes with P<0.05 & LogFC > |2|") # values are transformed into distances from the center of the row - specific average : ( actual value - mean of the group ) / standard deviation
+```
+
+Complex heat map 
+```{r echo = T, results = 'hide'}
+sigGeneList <- row.names(data.frame(subset(ControlvsKO, abs(log2FoldChange)>=2 & padj<=0.05)))
+myCol <- colorRampPalette(c("green", "black", "red"))(10)
+myBreaks <- seq(-3, 3, length.out=10)
+
+heat <- t(rldMatrix)[,sigGeneList]
+heat <- t(scale(t(heat)))
+
+sampleOrder <- c(
+  c("WT1","WT2","WT3","WT4"),
+  c("KOA1","KOA2","KOA3","KOA4"), c("KOB1", "KOB2", "KOB3", "KOB4"))
+
+library(ComplexHeatmap)
+library(circlize)
+library(cluster)
+ann <- data.frame(condition=sample_info$condition)
+colnames(ann) <- c("Condition")
+colours <- list("Control"="lightblue", "KOA"="purple", "KOB"="pink")
+rowAnn <- rowAnnotation(df=ann, boxplot=row_anno_boxplot(heat, border=FALSE, show_annotation_name=FALSE, gp=gpar(fill="#CCCCCC", fontsize=2), lim=c(-4,4), pch=".", size=unit(2, "mm"), col=sample_info$condition, annotation_width=unit(c(1, 7.5), "cm")))
+hmap <- Heatmap(heat,
+                #split=sampleOrderSplit,
+                row_order=sampleOrder,
+                name="Gene expression\nZ-score",
+                col=colorRamp2(myBreaks, myCol),
+                heatmap_legend_param=list(color_bar="continuous", legend_direction="vertical", legend_width=unit(4,"cm"), title_position="topcenter", title_gp=gpar(fontsize=6, fontface="bold")),
+                
+                cluster_rows=FALSE,
+                show_row_dend=FALSE,
+                row_title="",
+                row_title_side="left",
+                row_title_gp=gpar(fontsize=8,  fontface="bold"),
+                row_title_rot=0,
+                show_row_names=TRUE,
+                row_names_gp=gpar(fontsize=8, fontface="bold"),
+                row_names_side="left",
+                row_dend_width=unit(30,"mm"),
+                
+                cluster_columns=TRUE,
+                show_column_dend=TRUE,
+                column_title="Transcripts",
+                column_title_side="bottom",
+                column_title_gp=gpar(fontsize=12, fontface="bold"),
+                column_title_rot=0,
+                show_column_names=FALSE,
+                #column_names_gp=gpar(fontsize=termLab, fontface="bold"),
+                #column_names_max_height=unit(15, "cm"),
+                column_dend_height=unit(50,"mm"),
+                
+                clustering_distance_columns=function(x) as.dist(1-cor(t(x))),
+                clustering_method_columns="ward.D2",
+                clustering_distance_rows=function(x) as.dist(1-cor(t(x))),
+                clustering_method_rows="ward.D2") 
+
+#top_annotation_height=unit(1.75,"cm"),
+#bottom_annotation=sampleBoxplot)
+#bottom_annotation_height=unit(4, "cm"))
+draw(hmap + rowAnn, heatmap_legend_side="left", annotation_legend_side="left")
+```
+
+Heat map of all significant genes
+```{r echo = T, results = 'hide'}
+# set the thresholds
+padj.cutoff <- 0.05
+lfc.cutoff <- 2
+sigOE <- merged_pcresults_sorted_tb %>%
+  filter(padj < padj.cutoff & abs(log2FoldChange) > lfc.cutoff)
+
+norm_OEsig <- normalized_counts_tb[,c(1,2:13)] %>% 
+  filter(gene %in% sigOE$gene) %>% 
+  data.frame() %>%
+  column_to_rownames(var = "gene") 
+
+annotation <- sample_info %>% 
+  select(sample, condition) %>% 
+  data.frame(row.names = "sample")
+
+heat_colors <- brewer.pal(6, "YlOrRd")
+
+pheatmap(norm_OEsig, 
+         color = heat_colors, 
+         cluster_rows = T, 
+         show_rownames = F,
+         annotation = annotation, 
+         border_color = NA, 
+         fontsize = 10, 
+         scale = "row", 
+         fontsize_row = 10, 
+         height = 20)
+```
+
+*Volcano Plot*
+```{r echo = T, results = 'hide'}
+# main <- "KO vs WT Volcano Plot"
+# merged_pcresults_sorted$genenames <- merged_pcresults_sorted$GeneSymbol
+# toptable <- data.frame(merged_pcresults_sorted)
+# 
+# # check how many NA there are under padj
+# sum(is.na(merged_pcresults_sorted$padj))
+
+# source("~/Documents/EPO Project/CRISPR/Whole gene knock-out/Confirming EPO KO/RNA Sequencing/DeSeq2/VolcanoPlot.R")
+# volcano <- VolcanoPlot(toptable, 0.05, 0.05, 0.05, 2, "Volcano Plot Control vs KO")
+# volcano
+
+# Control vs KOA
+# main <- "KOA vs WT Volcano Plot"
+# merged_pcresults_sorted_KOA$genenames <- merged_pcresults_sorted_KOA$GeneSymbol
+# toptable <- data.frame(merged_pcresults_sorted_KOA)
+
+# check how many NA there are under padj
+# sum(is.na(merged_pcresults_sorted_KOA$padj))
+
+# source("~/Documents/EPO Project/CRISPR/Whole gene knock-out/Confirming EPO KO/RNA Sequencing/DeSeq2/VolcanoPlot.R")
+# volcano <- VolcanoPlot(toptable, 0.05, 0.05, 0.05, 2, "Volcano Plot Control vs KOA")
+# volcano
+
+# Control vs KOB
+# main <- "KOB vs WT Volcano Plot"
+# merged_pcresults_sorted_KOB$genenames <- merged_pcresults_sorted_KOB$GeneSymbol
+# toptable <- data.frame(merged_pcresults_sorted_KOB)
+
+# check how many NA there are under padj
+#sum(is.na(merged_pcresults_sorted_KOB$padj))
+
+# source("~/Documents/EPO Project/CRISPR/Whole gene knock-out/Confirming EPO KO/RNA Sequencing/DeSeq2/VolcanoPlot.R")
+# volcano <- VolcanoPlot(toptable, 0.05, 0.05, 0.05, 2, "Volcano Plot Control vs KOB")
+# volcano
+
+```
+
+# Focusing on the overlapping significant DEGs
+As we have two KO cell lines, we want to refine our list of overlapping DEGs and identify those which as significantly differentially expressed between Control and both KOA and KOB.
+
+First we need to merge the results of Control vs KOA and Control vs KOB together
+
+```{r echo = T, results = 'hide'}
+merge_KOA_KOB <- merge(merged_pcresults_sorted_KOA,merged_pcresults_sorted_KOB,by="Geneid", suffix=c(".WTvsKOA", ".WTvsKOB"), all=T)
+```
+
+Calculate the mean PC by average PC1 for WTvsKOA and PC1 for WTvsKOB
+```{r echo = T, results = 'hide'}
+merge_KOA_KOB$meanPC <- (merge_KOA_KOB$PC1.WTvsKOA + merge_KOA_KOB$PC1.WTvsKOB)/2
+#sort by mean PC value
+merge_KOA_KOB_pcsorted <- merge_KOA_KOB[order(-merge_KOA_KOB$meanPC), ]
+```
+
+Merge with the overall results when combining all KOs
+```{r echo = T, results = 'hide'}
+merge_KOA_KOB_pcsorted_all <- merge(merge_KOA_KOB_pcsorted, merged_pcresults_sorted, by="Geneid")
+# Sort by mean PC
+merge_KOA_KOB_pcsorted_all <- merge_KOA_KOB_pcsorted_all[order(-merge_KOA_KOB_pcsorted_all$meanPC),]
+
+# write.table(merge_KOA_KOB_pcsorted_all, "~/Documents/EPO Project/CRISPR/Whole gene knock-out/Confirming EPO KO/RNA Sequencing/DeSeq2/Overlapping DEG analysis/merged_KOA_KOB_analysis_PC_sorted.txt", sep="/t", row.names=F, quote=F)
+```
+
+Take top 500 genes based on average PC value
+```{r echo = T, results = 'hide'}
+top500_merge_KOA_KOB_pcsorted_all <- merge_KOA_KOB_pcsorted_all[order(-merge_KOA_KOB_pcsorted_all$meanPC),][1:500,]
+
+# write.table(top500_merge_KOA_KOB_pcsorted_all, "~/Documents/EPO Project/CRISPR/Whole gene knock-out/Confirming EPO KO/RNA Sequencing/DeSeq2/Overlapping DEG analysis/Top_500_DEGs_basedon_meanPC1_KOA_KOB_analysis.txt", sep="\t", row.names=F, quote=F)
+```
+
+Heatmap of the top 500 genes
+```{r echo = T, results = 'hide'}
+row.names(top500_merge_KOA_KOB_pcsorted_all) <- top500_merge_KOA_KOB_pcsorted_all$Geneid
+topgenes <- head(rownames(top500_merge_KOA_KOB_pcsorted_all),500)
+mat <- rldMatrix[topgenes,]
+mat <- mat - rowMeans(mat)
+mat2 <- data.frame(mat)
+mat2$Geneid <- row.names(mat2)
+mat2 <- join(mat2, gtf,by="Geneid")
+row.names(mat2) <- mat2$GeneSymbol
+mat2 <- mat2[,-c(13:18)]
+mat2 <- data.matrix(mat2)
+
+hmcol <- colorRampPalette(brewer.pal(11, "RdBu"))(50)
+df <- as.data.frame(colData(dds)[,c("genotype", "condition")])
+
+# scale = "row" converts to z-score scaling within rows
+heatmap.2(mat2, main="Top 50 DEGs", cexRow=0.6, cexCol=0.8, col=hmcol, Rowv=T, Colv=T, labCol=c("Control", NA,NA,NA,"   KOA",NA,NA,NA,"   KOB",NA,NA,NA), adjCol=c(-0.8,-62),srtCol=0, scale="row", dendrogram="col", trace="none", margin=c(1, 5), key.title="Counts density", key.xlab="Counts", key.ylab="")
+
+pheatmap(mat2, annotation_col=df,fontsize_col = 7, clustering_distance_rows = "euclidean", clustering_method="ward.D2", annotation_row=NA, show_rownames=F, cluster_cols = F,cluster_rows = T, main="Top 500 for segregating Control from KO along PC1 in PCA")
+```
+
+Venn Diagram of WT vs KOA & WT vs KOB
+
+1. Venn diagram of the overall files of for KOA and KOB (how many genes overlap in the beginning)
+```{r echo = T, results = 'hide'}
+library(VennDiagram)
+
+y <- list()
+y$KOA <- as.character(row.names(merged_pcresults_sorted_KOA))
+y$KOB <- as.character(row.names(merged_pcresults_sorted_KOB))
+# Generate plot
+myCol <- brewer.pal(3, "RdBu")
+# Pink: #FF9CEE, purple/blue: #AFCBFF, pastel yellow: #FFF5BA, Light blue: #ACE7FF
+w <- venn.diagram(y,
+                  #circles
+                  lwd = 2,
+                  lty = 'blank',
+                  col="transparent",
+                  fill = c(alpha("#FFF5BA",0.5), alpha('#ACE7FF',0.5)), cex=2,
+                  # font inside circles
+                  fontface = "plain",
+                  fontfamily = "sans", 
+                  # category names
+                  cat.cex=2, cat.fontface="bold", cat.default.pos="outer",
+                  cat.pos=c(-10,10), cat.dist=c(0.055,0.055), cat.fontfamily="sans",
+                  filename=NULL,alpha=0.7, scaled=TRUE)
+grid.newpage()
+grid.draw(w)
+```
+
+2. Create a Venn diagram of the overlapping significant DEGs
+Those which are significant (p<0.05 & abs(log2FC)>2) in both Control vs KOA and Control vs KOB
+
+```{r echo = T, results = 'hide'}
+x <- list()
+x$WTvsKOA <- as.character(row.names(merged_pcresults_sorted_KOA_sigFC2))
+x$WTvsKOB <- as.character(row.names(merged_pcresults_sorted_KOB_sigFC2))
+# Generate plot
+# Pink: #FF9CEE, purple/blue: #AFCBFF, pastel yellow: #FFF5BA, Light blue: #ACE7FF
+v <- venn.diagram(x,
+                  #circles
+                  lwd = 2,
+                  lty = 'blank',
+                  col="transparent",
+                  fill = c(alpha("#FFF5BA",0.5), alpha('#ACE7FF',0.5)), cex=2,
+                  # font inside circles
+                  fontface = "plain",
+                  fontfamily = "sans", 
+                  # category names
+                  cat.cex=2, cat.fontface="bold", cat.default.pos="outer",
+                  cat.pos=c(-10,10), cat.dist=c(0.055,0.055), cat.fontfamily="sans",
+                  filename=NULL,alpha=0.7, scaled=TRUE)
+
+# have a look at the default plot
+grid.newpage()
+grid.draw(v)
+```
+
+We now know that 314 genes are overlapping and significant in both KOs. 
+
+3. Extract the list of genes in each group
+```{r echo = T, results = 'hide'}
+# have a look at the names in the plot object v
+# We are interested in the labels
+lapply(v, function(i) i$label)
+
+# Over-write labels (5 to 7 chosen by manual check of labels)
+# in KOA only
+v[[5]]$label  <- paste(setdiff(x$WTvsKOA, x$WTvsKOB), collapse="\n")  
+only_in_KOA  <- data.frame(paste(setdiff(x$WTvsKOA, x$WTvsKOB)))
+
+# in KOB only
+v[[6]]$label <- paste(setdiff(x$WTvsKOB, x$WTvsKOA)  , collapse="\n") 
+only_in_KOB  <- data.frame(paste(setdiff(x$WTvsKOB, x$WTvsKOA)))
+
+# intersection i.e the genes that are signifcant in both analyses
+v[[7]]$label <- paste(intersect(x$WTvsKOA, x$WTvsKOB), collapse="\n")  
+KOA_KOB  <- data.frame(paste(intersect(x$WTvsKOA, x$WTvsKOB)))
+
+## Obtain gene names and their values for each list
+# overlapping list 
+KOA_KOB$Geneid <- KOA_KOB$paste.intersect.x.WTvsKOA..x.WTvsKOB..
+KOA_KOB_values <- merge(KOA_KOB, merge_KOA_KOB_pcsorted_all, by="Geneid")
+sum(abs(KOA_KOB_values$padj.WTvsKOB)>0.05)
+
+# Only significant DEG in KOA
+only_in_KOA$Geneid <- only_in_KOA$paste.setdiff.x.WTvsKOA..x.WTvsKOB..
+only_in_KOA_values <- merge(only_in_KOA, merge_KOA_KOB, by="Geneid")
+
+# Only significant DEG in KOB
+only_in_KOB$Geneid <- only_in_KOB$paste.setdiff.x.WTvsKOB..x.WTvsKOA..
+only_in_KOB_values <- merge(only_in_KOB, merge_KOA_KOB, by="Geneid")
+```
+
+4. Create a column with the mean PC values
+```{r echo = T, results = 'hide'}
+# Create a column of mean PC values
+KOA_KOB_values$meanPC <- (KOA_KOB_values$PC1.WTvsKOA + KOA_KOB_values$PC1.WTvsKOB)/2
+```
+5. Merge with wt vs all KO file to see if they come up in main analysis 
+```{r echo = T, results = 'hide'}
+KOA_KOB_values_combined <- merge(KOA_KOB_values, merged_pcresults, by="Geneid")
+sum(KOA_KOB_values_combined$padj>0.05, na.rm=T)
+```
+
+6. Sort by mean PC value
+```{r echo = T, results = 'hide'}
+KOA_KOB_values_sortedPC <- KOA_KOB_values[order(-KOA_KOB_values$meanPC), ]
+# write.table(KOA_KOB_values, file="~/Documents/EPO Project/CRISPR/Whole gene knock-out/Confirming EPO KO/RNA Sequencing/DeSeq2/Overlapping DEG analysis/Overlapping_genes_KOA_KOB_analysis_PC1sorted.txt", sep="\t", row.names=F, quote=F)
+```
+
+7. Obtain a list of Upregulated and Downregulated genes
+```{r echo = T, results = 'hide'}
+#### Upregulated genes
+upreg_KOA_KOB_overlap <- KOA_KOB_values_sortedPC[KOA_KOB_values_sortedPC$log2FoldChange>0,]
+# write.table(upreg_KOA_KOB_overlap, file="~/Documents/EPO Project/CRISPR/Whole gene knock-out/Confirming EPO KO/RNA Sequencing/DeSeq2/Overlapping DEG analysis/Overlapping_genes_KOA_KOB_analysis_Upregulated.txt", sep="\t", row.names=F, quote=F)
+
+#### Downregulated genes
+downreg_KOA_KOB_overlap <- KOA_KOB_values_sortedPC[KOA_KOB_values_sortedPC$log2FoldChange<0,]
+# write.table(downreg_KOA_KOB_overlap, file="~/Documents/EPO Project/CRISPR/Whole gene knock-out/Confirming EPO KO/RNA Sequencing/DeSeq2/Overlapping DEG analysis/Overlapping_genes_KOA_KOB_analysis_Downregulated.txt", sep="\t", row.names=F, quote=F)
+```
+
+8. Plot all of the overlapping genes on a heat map 
+```{r echo = T, results = 'hide'}
+row.names(KOA_KOB_values_sortedPC) <- KOA_KOB_values_sortedPC$Geneid
+overlapping_genes <- rownames(KOA_KOB_values_sortedPC)
+library(plyr)
+library(RColorBrewer)
+mat <- rldMatrix[overlapping_genes,]
+mat <- mat - rowMeans(mat)
+mat2 <- data.frame(mat)
+mat2$Geneid <- row.names(mat2)
+mat2 <- join(mat2, gtf,by="Geneid")
+row.names(mat2) <- mat2$GeneSymbol
+mat2 <- mat2[,-c(13:18)]
+mat2 <- data.matrix(mat2)
+hmcol <- colorRampPalette(brewer.pal(11, "RdBu"))(50)
+df <- as.data.frame(colData(dds)[,c("genotype", "condition")])
+
+# scale = "row" converts to z-score scaling within rows
+library(gplots)
+
+heatmap.2(mat2, main="Heat map of overlapping genes", cexRow=0.6, labRow=NA,cexCol=0.8, col=hmcol, Rowv=T, Colv=T, labCol=c("Control", NA,NA,NA,"   KOA",NA,NA,NA, "   KOB",NA,NA,NA), adjCol=c(-2.5,50),srtCol=0, scale="row", dendrogram="column", trace="none", margin=c(1, 5), key.title="Counts density", key.xlab="Counts", key.ylab="")
+
+```
+
+9. Plot the top 50 ordered by the mean of PC1 & using the rldMatrix from WTvsKO study
+```{r echo = T, results = 'hide'}
+row.names(KOA_KOB_values_sortedPC) <- KOA_KOB_values_sortedPC$Geneid
+topgenes <- head(rownames(KOA_KOB_values_sortedPC),50)
+mat <- rldMatrix[topgenes,]
+mat <- mat - rowMeans(mat)
+mat2 <- data.frame(mat)
+mat2$Geneid <- row.names(mat2)
+mat2 <- join(mat2, gtf,by="Geneid")
+row.names(mat2) <- mat2$GeneSymbol
+mat2 <- mat2[,-c(13:18)]
+mat2 <- data.matrix(mat2)
+
+hmcol <- colorRampPalette(brewer.pal(11, "RdBu"))(50)
+df <- as.data.frame(colData(dds)[,c("genotype", "condition")])
+
+library(gplots)
+heatmap.2(mat2, main="Top 50 DEGs", cexRow=0.6, cexCol=0.8, col=hmcol, Rowv=T, Colv=F, labCol=c("Control", NA,NA,NA,"   KOA",NA,NA,NA,"   KOB",NA,NA,NA), adjCol=c(-2,-85),srtCol=0, scale="row", dendrogram="none", trace="none", margin=c(1, 5), key.title="Counts density", key.xlab="Counts", key.ylab="")
+
+# Alternative plotting method
+# pheatmap(mat2, annotation_col=df, fontsize_row = 5, fontsize_col = 7, cluster_cols = F,cluster_rows = F, main="Top 50 DEGs \n P<0.05 & abs|Log2 Fold Change|>2")
+```
+
+
+10. Plot the expression of the top 50 genes on a bar plot - sorted by mean PC1 values
+```{r echo = T, results = 'hide'}
+library(tibble)
+library(tidyr)
+library(ggplot2)
+library(tidyverse)
+
+KOA_KOB_values_combined_sortedPC_tb <- KOA_KOB_values_sortedPC  %>% 
+  data.frame() %>%
+  rownames_to_column(var="gene") %>% 
+  as_tibble()
+
+top50_DEGs_genes <- KOA_KOB_values_combined_sortedPC_tb %>% 
+  arrange(-meanPC) %>% 	#Arrange rows by padj values
+  pull(gene) %>% 		#Extract character vector of ordered genes
+  head(n=50) 
+top50_DEG_genes <- merged_pcresults_sorted[top50_DEGs_genes,]
+top50_DEG_genes <- data.frame(top50_DEG_genes)
+top50_DEG_genes$Geneid <- row.names(top50_DEG_genes)
+top50_DEG_genes <- merge(top50_DEG_genes, gtf, by="Geneid")
+
+#change the normalised counts into a tibble
+normalized_counts_tb <- norm %>% 
+  data.frame() %>%
+  rownames_to_column(var="gene") %>% 
+  as_tibble()
+
+top50_DEG_norm <- normalized_counts_tb %>%
+  filter(gene %in% top50_DEGs_genes)
+
+gathered_top50_DEGs <- top50_DEG_norm %>%
+  tidyr::gather(colnames(top50_DEG_norm)[2:13], key = "sample", value = "normalized_counts")
+
+gathered_top50_DEGs <- inner_join(gathered_top50_DEGs, sample_info, by="sample")
+names(gathered_top50_DEGs)[1] <- "Geneid"
+gathered_top50_DEGs<- inner_join(gtf, gathered_top50_DEGs, by="Geneid")
+gathered_top50_DEGs<- inner_join(merged_pcresults_sorted, gathered_top50_DEGs, by="Geneid")
+#write.table(gathered_top20_DEGs, "Differential Gene Expression/Top_50_DEGs.csv", row.names=F, quote=F, sep=",", col.names=T)
+
+#png("BarPlot_Top50_Overlapping_significant_genes.png", width=1200, height=800)
+ggplot(gathered_top50_DEGs) +
+  geom_point(aes(x = GeneSymbol.x, y = normalized_counts, color = condition)) +
+  xlab("Genes") +
+  ylab("Regularised Log Counts") +
+  ggtitle("Top 50 Overlapping Significant Genes (P<0.05 & abs(Log2FC) > 2)") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size=6)) +
+  theme(plot.title = element_text(hjust = 0.5))
+# dev.off()
+```
