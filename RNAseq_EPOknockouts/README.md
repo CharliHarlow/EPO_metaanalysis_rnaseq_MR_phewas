@@ -99,15 +99,6 @@ cutadapt \
     reads.R1.fastq.gz reads.R2.fastq.gz
 ``` 
 
-## 1. Download the raw reads from Exeter Sequencing service onto server ##
-Once you have received email from Exeter Sequencing Service, you can download the results onto server using the following command
-```
-wget -r -p ftp://Username:Password@ftp1.sequencing.exeter.ac.uk 
-```
-•	To run this in the background so if you log off it still continues to download add in the -b option. This will produce a wget-log file with information on where it is in the downloading. 
-
-•	To look into the wget-log file use: less wget-log
-
 ## Repeat FastQC and MultiQC on the trimmed reads to check trimming
 
 Repeat FastQC and MultiQC as above changing the names of the input files to the trimmed fastq files. 
