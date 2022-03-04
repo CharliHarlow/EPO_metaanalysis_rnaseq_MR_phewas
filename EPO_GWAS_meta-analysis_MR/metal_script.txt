@@ -1,0 +1,33 @@
+# Metal example script for EPO meta-analysis
+# Charli Harlow
+
+MARKERLABEL markername
+ALLELELABELS Effect_allele Non_effect_allele
+EFFECTLABEL Beta
+WEIGHTLABEL N
+PVALUELABEL Pvalue
+STDERRLABEL SE
+FREQLABEL EAF
+
+GENOMICCONTROL ON
+AVERAGEFREQ ON
+MINMAXFREQ ON
+COLUMNCOUNTING LENIENT
+CUSTOMVARIABLE TotalSampleSize
+LABEL TotalSampleSize AS N
+
+SCHEME STDERR
+
+ADDFILTER MAC > 3
+ADDFILTER EAF > 0
+ADDFILTER EAF < 1
+ADDFILTER Info >= 0.3
+
+PROCESS /mnt/Data9/cs660/epo_gwas/for_METAL/EPO_invnt_inchianti_gwas_results_with_mac_no_diff.txt.gz
+PROCESS /mnt/Data9/cs660/epo_gwas/for_METAL/epo_invnt_blsa_gwas_results_with_mac_correct_test.txt.gz
+PROCESS /mnt/Data9/cs660/epo_gwas/for_METAL/epo_invnt_habc_EA_gwas_results_with_mac.txt.gz
+PROCESS /mnt/Data9/cs660/epo_gwas/for_METAL/epo_invnt_prevend_gwas_results_with_mac.txt.gz
+PROCESS /mnt/Data9/cs660/epo_gwas/for_METAL/epo_invnt_habc_AA_gwas_results_with_mac.txt.gz
+
+ANALYZE HETEROGENEITY
+CLEAR
